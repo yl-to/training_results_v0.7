@@ -11,6 +11,9 @@ from maskrcnn_benchmark.structures.boxlist_ops import boxlist_iou, boxlist_iou_b
 from maskrcnn_benchmark.modeling.balanced_positive_negative_sampler import (
     BalancedPositiveNegativeSampler
 )
+from maskrcnn_benchmark.modeling.score_hlr_sampler import (
+    ScoreHLRSampler
+)
 from maskrcnn_benchmark.modeling.utils import cat
 from torch.nn.utils.rnn import pad_sequence
 
@@ -126,12 +129,14 @@ class FastRCNNLossComputation(object):
           
         # scores is used as a mask, -1 means box is invalid
         if num_images == 1:
-            sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels, is_rpn=0, objectness=prop_scores)
+            # sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels, is_rpn=0, objectness=prop_scores)
+            sampled_pos_inds, sampled_neg_inds = self.score_hrl_sampler(labels, is_rpn=0, objectness=prop_scores)
             # when num_images=1, sampled pos inds only has 1 item, so avoid copy in torch.cat
             pos_inds_per_image = [torch.nonzero(sampled_pos_inds[0]).squeeze(1)]
             neg_inds_per_image = [torch.nonzero(sampled_neg_inds[0]).squeeze(1)]
         else:
-            sampled_pos_inds, sampled_neg_inds, num_pos_samples, num_neg_samples = self.fg_bg_sampler(labels, is_rpn=0, objectness=prop_scores)
+            # sampled_pos_inds, sampled_neg_inds, num_pos_samples, num_neg_samples = self.fg_bg_sampler(labels, is_rpn=0, objectness=prop_scores)
+            sampled_pos_inds, sampled_neg_inds, num_pos_samples, num_neg_samples = self.score_hrl_sampler(labels, is_rpn=0, objectness=prop_scores)
             pos_inds_per_image = sampled_pos_inds.split(list(num_pos_samples))
             neg_inds_per_image = sampled_neg_inds.split(list(num_neg_samples))
         prop_boxes = prop_boxes.view(-1,4)
@@ -217,15 +222,17 @@ def make_roi_box_loss_evaluator(cfg):
     bbox_reg_weights = cfg.MODEL.ROI_HEADS.BBOX_REG_WEIGHTS
     box_coder = BoxCoder(weights=bbox_reg_weights)
 
-    fg_bg_sampler = BalancedPositiveNegativeSampler(
+    # fg_bg_sampler = BalancedPositiveNegativeSampler(
+    #     cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE, cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION
+    # )
+    score_hrl_sampler = ScoreHLRSampler(
         cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE, cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION
     )
-
     cls_agnostic_bbox_reg = cfg.MODEL.CLS_AGNOSTIC_BBOX_REG
 
     loss_evaluator = FastRCNNLossComputation(
         matcher, 
-        fg_bg_sampler, 
+        score_hrl_sampler, 
         box_coder, 
         cls_agnostic_bbox_reg
     )

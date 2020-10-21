@@ -2,7 +2,7 @@
 # Copyright (c) 2018-2019 NVIDIA CORPORATION. All rights reserved.
 import torch
 
-class BalancedPositiveNegativeSampler(object):
+class ScoreHLRSampler(object):
     """
     This class samples batches, ensuring that they contain a fixed proportion of positives
     """
