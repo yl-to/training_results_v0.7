@@ -130,7 +130,7 @@ class FastRCNNLossComputation(object):
         # scores is used as a mask, -1 means box is invalid
         if num_images == 1:
             # sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels, is_rpn=0, objectness=prop_scores)
-            sampled_pos_inds, sampled_neg_inds = self.score_hrl_sampler(labels, is_rpn=0, objectness=prop_scores)
+            sampled_pos_inds, sampled_neg_inds = self.score_hrl_sampler(labels, target_boxes, is_rpn=0, objectness=prop_scores)
             # when num_images=1, sampled pos inds only has 1 item, so avoid copy in torch.cat
             pos_inds_per_image = [torch.nonzero(sampled_pos_inds[0]).squeeze(1)]
             neg_inds_per_image = [torch.nonzero(sampled_neg_inds[0]).squeeze(1)]

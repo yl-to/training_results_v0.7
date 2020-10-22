@@ -16,7 +16,26 @@ class ScoreHLRSampler(object):
         self.batch_size_per_image = batch_size_per_image
         self.positive_fraction = positive_fraction
 
-    def __call__(self, matched_idxs, is_rpn=0, objectness=None):
+    def bbox2roi(self, bbox_list):
+        """Convert a list of bboxes to roi format.
+        Args:
+            bbox_list (list[Tensor]): a list of bboxes corresponding to a batch
+            of images.
+        Returns:
+            Tensor: shape (n, 5), [batch_ind, x1, y1, x2, y2]
+        """
+        rois_list = []
+        for img_id, bboxes in enumerate(bbox_list):
+            if bboxes.size(0) > 0:
+                img_inds = bboxes.new_full((bboxes.size(0), 1), img_id)
+                rois = torch.cat([img_inds, bboxes[:, :4]], dim=-1)
+            else:
+                rois = bboxes.new_zeros((0, 5))
+            rois_list.append(rois)
+        rois = torch.cat(rois_list, 0)
+        return rois
+
+    def __call__(self, matched_idxs, bboxes, is_rpn=0,  objectness=None):
         """
         Arguments:
             matched idxs: list of tensors containing -1, 0 or positive values.
