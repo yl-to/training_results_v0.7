@@ -26,7 +26,7 @@ class FastRCNNLossComputation(object):
     def __init__(
         self, 
         proposal_matcher, 
-        fg_bg_sampler, 
+        score_hrl_sampler, 
         box_coder, 
         cls_agnostic_bbox_reg=False
     ):
@@ -37,7 +37,7 @@ class FastRCNNLossComputation(object):
             box_coder (BoxCoder)
         """
         self.proposal_matcher = proposal_matcher
-        self.fg_bg_sampler = fg_bg_sampler
+        self.score_hrl_sampler = score_hrl_sampler
         self.box_coder = box_coder
         self.cls_agnostic_bbox_reg = cls_agnostic_bbox_reg
 
