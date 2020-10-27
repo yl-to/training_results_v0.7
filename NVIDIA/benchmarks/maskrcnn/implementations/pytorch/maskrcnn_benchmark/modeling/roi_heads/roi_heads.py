@@ -4,7 +4,7 @@ import torch
 from .box_head.box_head import build_roi_box_head
 from .mask_head.mask_head import build_roi_mask_head
 from .keypoint_head.keypoint_head import build_roi_keypoint_head
-
+from maskrcnn_benchmark.modeling.subsampler import make_subsampler
 
 class CombinedROIHeads(torch.nn.ModuleDict):
     """
@@ -12,17 +12,23 @@ class CombinedROIHeads(torch.nn.ModuleDict):
     head.
     """
 
-    def __init__(self, cfg, heads):
+    def __init__(self, cfg, heads, subsampler):
         super(CombinedROIHeads, self).__init__(heads)
         self.cfg = cfg.clone()
         if cfg.MODEL.MASK_ON and cfg.MODEL.ROI_MASK_HEAD.SHARE_BOX_FEATURE_EXTRACTOR:
             self.mask.feature_extractor = self.box.feature_extractor
         if cfg.MODEL.KEYPOINT_ON and cfg.MODEL.ROI_KEYPOINT_HEAD.SHARE_BOX_FEATURE_EXTRACTOR:
             self.keypoint.feature_extractor = self.box.feature_extractor
+        self.subsampler = subsampler
 
     def forward(self, features, proposals, targets=None):
         losses = {}
         # TODO rename x to roi_box_features, if it doesn't increase memory consumption
+        if self.training:
+            # Faster R-CNN subsamples during training the proposals with a fixed
+            # positive / negative ratio
+            with torch.no_grad():
+                proposals = self.subsampler.subsample(proposals, targets, self.box, features)
         x, detections, loss_box = self.box(features, proposals, targets)
         losses.update(loss_box)
         if self.cfg.MODEL.MASK_ON:
@@ -36,7 +42,7 @@ class CombinedROIHeads(torch.nn.ModuleDict):
                 mask_features = x
             # During training, self.box() will return the unaltered proposals as "detections"
             # this makes the API consistent during training and testing
-            x, detections, loss_mask = self.mask(mask_features, detections, targets)
+            x, make_roi_box_loss_evaluator, loss_mask = self.mask(mask_features, detections, targets)
             losses.update(loss_mask)
 
         if self.cfg.MODEL.KEYPOINT_ON:
@@ -62,6 +68,7 @@ def build_roi_heads(cfg):
     if cfg.MODEL.RETINANET_ON:
         return []
 
+    subsampler = make_subsampler(cfg)
     if not cfg.MODEL.RPN_ONLY:
         roi_heads.append(("box", build_roi_box_head(cfg)))
     if cfg.MODEL.MASK_ON:
@@ -71,6 +78,6 @@ def build_roi_heads(cfg):
 
     # combine individual heads in a single module
     if roi_heads:
-        roi_heads = CombinedROIHeads(cfg, roi_heads)
+        roi_heads = CombinedROIHeads(cfg, roi_heads, subsampler)
 
     return roi_heads

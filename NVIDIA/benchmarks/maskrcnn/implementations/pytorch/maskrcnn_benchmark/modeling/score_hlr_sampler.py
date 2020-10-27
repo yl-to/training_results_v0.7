@@ -35,7 +35,7 @@ class ScoreHLRSampler(object):
         rois = torch.cat(rois_list, 0)
         return rois
 
-    def __call__(self, matched_idxs, bboxes, is_rpn=0,  objectness=None):
+    def __call__(self, matched_idxs, is_rpn=0,  objectness=None):
         """
         Arguments:
             matched idxs: list of tensors containing -1, 0 or positive values.
@@ -53,7 +53,6 @@ class ScoreHLRSampler(object):
         """
         num_images = len(matched_idxs)
         if num_images == 1:
-            import pdb; pdb.set_trace()
             pos_idx = []
             neg_idx = []
             matched_idxs = [matched_idxs.view(-1)]
@@ -79,7 +78,14 @@ class ScoreHLRSampler(object):
                 perm2 = torch.randperm(negative.numel(), device=negative.device)[:num_neg]
                 pos_idx_per_image = positive.index_select(0, perm1)
                 neg_idx_per_image = negative.index_select(0, perm2)
-    
+                # negaive is the input of isr_n]
+                import pdb; pdb.set_trace()
+                with torch.no_grad():
+                    print('debug')
+                    # neg_bboxes = bboxes[negative]
+                    # neg_rois = bbox2roi([neg_bboxes])
+                    # bbox_result = box_head(features, neg_rois)
+
                 # create binary mask from indices
                 pos_idx_per_image_mask = torch.zeros_like(
                     matched_idxs_per_image, dtype=torch.bool
@@ -92,6 +98,7 @@ class ScoreHLRSampler(object):
     
                 pos_idx.append(pos_idx_per_image_mask)
                 neg_idx.append(neg_idx_per_image_mask)
+
                 return pos_idx, neg_idx
 
         ## this implements a batched random subsampling using a tensor of random numbers and sorting

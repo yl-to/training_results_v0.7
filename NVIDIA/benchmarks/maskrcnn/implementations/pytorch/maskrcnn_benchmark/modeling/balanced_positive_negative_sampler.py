@@ -34,7 +34,6 @@ class BalancedPositiveNegativeSampler(object):
         """
         num_images = len(matched_idxs)
         if num_images == 1:
-            import pdb; pdb.set_trace()
             pos_idx = []
             neg_idx = []
             matched_idxs = [matched_idxs.view(-1)]
@@ -77,8 +76,6 @@ class BalancedPositiveNegativeSampler(object):
 
         ## this implements a batched random subsampling using a tensor of random numbers and sorting
         if is_rpn:
-            print('not single image')
-            import pdb; pdb.set_trace()
             num_anchors_per_im = matched_idxs[0].size(0)
             num_images = len(matched_idxs)
             matched_idxs_cat = matched_idxs

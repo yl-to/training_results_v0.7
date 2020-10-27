@@ -35,12 +35,6 @@ class ROIBoxHead(torch.nn.Module):
                 head. During testing, returns an empty dict.
         """
 
-        if self.training:
-            # Faster R-CNN subsamples during training the proposals with a fixed
-            # positive / negative ratio
-            with torch.no_grad():
-                proposals = self.loss_evaluator.subsample(proposals, targets)
-
         # extract features that will be fed to the final classifier. The
         # feature_extractor generally corresponds to the pooler + heads
         x = self.feature_extractor(features, proposals)
@@ -52,7 +46,7 @@ class ROIBoxHead(torch.nn.Module):
             return x, result, {}
 
         loss_classifier, loss_box_reg = self.loss_evaluator(
-            [class_logits.float()], [box_regression.float()]
+            [class_logits.float()], [box_regression.float()], proposals
         )
         return (
             x,
