@@ -28,12 +28,11 @@ class CombinedROIHeads(torch.nn.ModuleDict):
             # Faster R-CNN subsamples during training the proposals with a fixed
             # positive / negative ratio
             with torch.no_grad():
-                proposals, bbox_result = self.subsampler.subsample(proposals, targets, features, self.box)
+                proposals = self.subsampler.subsample(proposals, targets, features, self.box)
                 # forward here
 
-        # x, detections, loss_box, class_logits, box_regression = self.box(features, proposals, targets)
-        import pdb; pdb.set_trace()
-        x, detections, loss_box, class_logits, box_regression = bbox_result
+        x, detections, loss_box, class_logits, box_regression = self.box(features, proposals, targets)
+
         losses.update(loss_box)
         if self.cfg.MODEL.MASK_ON:
             mask_features = features

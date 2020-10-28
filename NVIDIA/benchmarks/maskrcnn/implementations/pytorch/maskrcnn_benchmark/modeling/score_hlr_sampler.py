@@ -1,15 +1,18 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 # Copyright (c) 2018-2019 NVIDIA CORPORATION. All rights reserved.
 import torch
+from torch.nn import functional as F
 
 from maskrcnn_benchmark.structures.bounding_box import BoxList
+from mmcv.ops import nms_match
 
 class ScoreHLRSampler(object):
     """
     This class samples batches, ensuring that they contain a fixed proportion of positives
     """
 
-    def __init__(self, batch_size_per_image, positive_fraction):
+    def __init__(self, batch_size_per_image, positive_fraction,
+                 score_thr=0.05, iou_thr=0.5, k=0.5, bias=0):
         """
         Arguments:
             batch_size_per_image (int): number of elements to be selected per image
@@ -17,6 +20,10 @@ class ScoreHLRSampler(object):
         """
         self.batch_size_per_image = batch_size_per_image
         self.positive_fraction = positive_fraction
+        self.score_thr = score_thr
+        self.iou_thr = iou_thr
+        self.k = k
+        self.bias=bias
 
     def __call__(self, matched_idxs,
                  regression_targets,
@@ -25,6 +32,7 @@ class ScoreHLRSampler(object):
                  prop_boxes,
                  image_sizes,
                  real_matched_idxs,
+                 box_coder,
                  is_rpn=0, objectness=None):
         """
         Arguments:
@@ -65,41 +73,74 @@ class ScoreHLRSampler(object):
     
                 # randomly select positive and negative examples
                 perm1 = torch.randperm(positive.numel(), device=positive.device)[:num_pos]
-                perm2 = torch.randperm(negative.numel(), device=negative.device)[:num_neg]
+                # perm2 = torch.randperm(negative.numel(), device=negative.device)[:num_neg]
                 pos_idx_per_image = positive.index_select(0, perm1)
-                neg_idx_per_image = negative.index_select(0, perm2)
+                # neg_idx_per_image = negative.index_select(0, perm2)
+
                 # negaive is the "neg_inds" in _sample_neg().
                 # num_neg is "num_expected"
-
                 with torch.no_grad():
                     print('debug')
                     box = BoxList(prop_boxes[0][negative], image_size=image_sizes[0])
                     box.add_field("matched_idxs", real_matched_idxs[0][negative])
                     box.add_field("regression_targets", regression_targets[0][negative])
                     box.add_field("labels", matched_idxs[0][negative])
-                    bbox_result = box_head(features, [box])
-                    loss_cls, loss_box = bbox_result[2]['loss_classifier'], bbox_result[2]['loss_box_reg']
-                    cls_score, bbox_pred = bbox_result[3], bbox_result[4]
-                    import pdb; pdb.set_trace()
-                    ori_loss = box_head.loss_evaluator([cls_score.float()], None, [box])[0]
+                    x = box_head.feature_extractor(features, [box])
+                    cls_score, bbox_pred = box_head.predictor(x)
+                    cls_loss = F.cross_entropy(cls_score, negative.new_full((negative.size(0),), 81), reduction='none')
+
                     max_score, argmax_score = cls_score.softmax(-1)[:, :-1].max(-1)
-                    SCORE_THR = 0.05 # this should be passed as parameter
-                    valid_inds = (max_score > SCORE_THR).nonzero().view(-1)
-                    invalid_inds = (max_score <= SCORE_THR).nonzero().view(-1)
+                    valid_inds = (max_score > self.score_thr).nonzero().view(-1)
+                    invalid_inds = (max_score <= self.score_thr).nonzero().view(-1)
                     num_valid = valid_inds.size(0)
                     num_invalid = invalid_inds.size(0)
 
                     num_hlr = min(num_valid, num_neg)
                     num_rand = num_neg - num_hlr
-                    # if num_valid > 0:
-                    #     valid_rois = neg_rois[valid_inds]
-                    #     valid_max_score = max_score[valid_inds]
-                    #     valid_argmax_score = argmax_score[valid_inds]
-                    #     valid_bbox_pred = bbox_pred[valid_inds]
-                    #     # valid_bbox_pred shape: [num_valid, #num_classes, 4]
-                    #     valid_bbox_pred = valid_bbox_pred.view(
-                    #         valid_bbox_pred.size(0), -1, 4)
-                    #     selected_bbox_pred = valid_bbox_pred[range(num_valid), valid_argmax_score]
+                    if num_valid > 0:
+                        valid_bboxes = prop_boxes[0][negative][valid_inds]
+                        valid_max_score = max_score[valid_inds]
+                        valid_argmax_score = argmax_score[valid_inds]
+                        valid_bbox_pred = bbox_pred[valid_inds]
+                        # valid_bbox_pred shape: [num_valid, #num_classes, 4]
+                        valid_bbox_pred = valid_bbox_pred.view(valid_bbox_pred.size(0), -1, 4)
+                        selected_bbox_pred = valid_bbox_pred[range(num_valid), valid_argmax_score]
+                        pred_bboxes = box_coder.decode(selected_bbox_pred, valid_bboxes)
+                        pred_bboxes_with_score = torch.cat([pred_bboxes, valid_max_score[:, None]], -1)
+                        pred_bboxes_with_score = pred_bboxes_with_score.type(torch.float)
+                        group = nms_match(pred_bboxes_with_score, self.iou_thr)
+
+                        # imp: importance
+                        imp = cls_score.new_zeros(num_valid)
+                        for g in group:
+                            g_score = valid_max_score[g]
+                            # g_score has already sorted
+                            rank = g_score.new_tensor(range(g_score.size(0)))
+                            imp[g] = num_valid - rank + g_score
+                        _, imp_rank_inds = imp.sort(descending=True)
+                        _, imp_rank = imp_rank_inds.sort()
+                        hlr_inds = imp_rank_inds[:num_neg]
+
+                        if num_rand > 0:
+                            rand_inds = torch.randperm(num_invalid)[:num_rand]
+                            select_inds = torch.cat([valid_inds[hlr_inds], invalid_inds[rand_inds]])
+                        else:
+                            select_inds = valid_inds[hlr_inds]
+
+                        neg_label_weights = cls_score.new_ones(num_neg)
+                        up_bound = max(num_neg, num_valid)
+                        imp_weights = (up_bound - imp_rank[hlr_inds].float()) / up_bound
+                        neg_label_weights[:num_hlr] = imp_weights
+                        neg_label_weights[num_hlr:] = imp_weights.min()
+                        import pdb; pdb.set_trace()
+                        neg_label_weights = (self.bias + (1 - self.bias) * neg_label_weights).pow(self.k)
+                        ori_selected_loss = cls_loss[select_inds]
+                        new_loss = ori_selected_loss * neg_label_weights
+                        norm_ratio = ori_selected_loss.sum() / new_loss.sum()
+                        neg_label_weights *= norm_ratio
+                    else:
+                        neg_label_weights = cls_score.new_ones(num_neg)
+                        select_inds = torch.randperm(negative.numel())[:num_neg]
 
                 # create binary mask from indices
                 pos_idx_per_image_mask = torch.zeros_like(
@@ -109,12 +150,12 @@ class ScoreHLRSampler(object):
                     matched_idxs_per_image, dtype=torch.bool
                 )
                 pos_idx_per_image_mask.index_fill_(0, pos_idx_per_image, 1)
-                neg_idx_per_image_mask.index_fill_(0, neg_idx_per_image, 1)
+                neg_idx_per_image_mask.index_fill_(0, select_inds, 1)
     
                 pos_idx.append(pos_idx_per_image_mask)
                 neg_idx.append(neg_idx_per_image_mask)
 
-                return pos_idx, neg_idx, bbox_result
+                return pos_idx, neg_idx, neg_label_weights
 
         ## this implements a batched random subsampling using a tensor of random numbers and sorting
         if is_rpn:
