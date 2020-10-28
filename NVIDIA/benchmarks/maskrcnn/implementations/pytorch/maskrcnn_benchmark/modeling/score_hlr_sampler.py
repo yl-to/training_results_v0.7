@@ -2,6 +2,8 @@
 # Copyright (c) 2018-2019 NVIDIA CORPORATION. All rights reserved.
 import torch
 
+from maskrcnn_benchmark.structures.bounding_box import BoxList
+
 class ScoreHLRSampler(object):
     """
     This class samples batches, ensuring that they contain a fixed proportion of positives
@@ -16,26 +18,14 @@ class ScoreHLRSampler(object):
         self.batch_size_per_image = batch_size_per_image
         self.positive_fraction = positive_fraction
 
-    def bbox2roi(self, bbox_list):
-        """Convert a list of bboxes to roi format.
-        Args:
-            bbox_list (list[Tensor]): a list of bboxes corresponding to a batch
-            of images.
-        Returns:
-            Tensor: shape (n, 5), [batch_ind, x1, y1, x2, y2]
-        """
-        rois_list = []
-        for img_id, bboxes in enumerate(bbox_list):
-            if bboxes.size(0) > 0:
-                img_inds = bboxes.new_full((bboxes.size(0), 1), img_id)
-                rois = torch.cat([img_inds, bboxes[:, :4]], dim=-1)
-            else:
-                rois = bboxes.new_zeros((0, 5))
-            rois_list.append(rois)
-        rois = torch.cat(rois_list, 0)
-        return rois
-
-    def __call__(self, matched_idxs, is_rpn=0,  objectness=None):
+    def __call__(self, matched_idxs,
+                 regression_targets,
+                 features,
+                 box_head,
+                 prop_boxes,
+                 image_sizes,
+                 real_matched_idxs,
+                 is_rpn=0, objectness=None):
         """
         Arguments:
             matched idxs: list of tensors containing -1, 0 or positive values.
@@ -78,13 +68,38 @@ class ScoreHLRSampler(object):
                 perm2 = torch.randperm(negative.numel(), device=negative.device)[:num_neg]
                 pos_idx_per_image = positive.index_select(0, perm1)
                 neg_idx_per_image = negative.index_select(0, perm2)
-                # negaive is the input of isr_n]
-                import pdb; pdb.set_trace()
+                # negaive is the "neg_inds" in _sample_neg().
+                # num_neg is "num_expected"
+
                 with torch.no_grad():
                     print('debug')
-                    # neg_bboxes = bboxes[negative]
-                    # neg_rois = bbox2roi([neg_bboxes])
-                    # bbox_result = box_head(features, neg_rois)
+                    box = BoxList(prop_boxes[0][negative], image_size=image_sizes[0])
+                    box.add_field("matched_idxs", real_matched_idxs[0][negative])
+                    box.add_field("regression_targets", regression_targets[0][negative])
+                    box.add_field("labels", matched_idxs[0][negative])
+                    bbox_result = box_head(features, [box])
+                    loss_cls, loss_box = bbox_result[2]['loss_classifier'], bbox_result[2]['loss_box_reg']
+                    cls_score, bbox_pred = bbox_result[3], bbox_result[4]
+                    import pdb; pdb.set_trace()
+                    ori_loss = box_head.loss_evaluator([cls_score.float()], None, [box])[0]
+                    max_score, argmax_score = cls_score.softmax(-1)[:, :-1].max(-1)
+                    SCORE_THR = 0.05 # this should be passed as parameter
+                    valid_inds = (max_score > SCORE_THR).nonzero().view(-1)
+                    invalid_inds = (max_score <= SCORE_THR).nonzero().view(-1)
+                    num_valid = valid_inds.size(0)
+                    num_invalid = invalid_inds.size(0)
+
+                    num_hlr = min(num_valid, num_neg)
+                    num_rand = num_neg - num_hlr
+                    # if num_valid > 0:
+                    #     valid_rois = neg_rois[valid_inds]
+                    #     valid_max_score = max_score[valid_inds]
+                    #     valid_argmax_score = argmax_score[valid_inds]
+                    #     valid_bbox_pred = bbox_pred[valid_inds]
+                    #     # valid_bbox_pred shape: [num_valid, #num_classes, 4]
+                    #     valid_bbox_pred = valid_bbox_pred.view(
+                    #         valid_bbox_pred.size(0), -1, 4)
+                    #     selected_bbox_pred = valid_bbox_pred[range(num_valid), valid_argmax_score]
 
                 # create binary mask from indices
                 pos_idx_per_image_mask = torch.zeros_like(
@@ -99,7 +114,7 @@ class ScoreHLRSampler(object):
                 pos_idx.append(pos_idx_per_image_mask)
                 neg_idx.append(neg_idx_per_image_mask)
 
-                return pos_idx, neg_idx
+                return pos_idx, neg_idx, bbox_result
 
         ## this implements a batched random subsampling using a tensor of random numbers and sorting
         if is_rpn:

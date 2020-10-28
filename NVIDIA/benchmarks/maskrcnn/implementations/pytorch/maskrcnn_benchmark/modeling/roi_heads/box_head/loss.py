@@ -40,7 +40,6 @@ class FastRCNNLossComputation(object):
         """
 
         class_logits = cat(class_logits, dim=0)
-        box_regression = cat(box_regression, dim=0)
         device = class_logits.device
 
         labels = cat([proposal.get_field("labels") for proposal in proposals], dim=0)
@@ -49,7 +48,10 @@ class FastRCNNLossComputation(object):
         )
 
         classification_loss = F.cross_entropy(class_logits, labels)
+        if box_regression == None:
+            return classification_loss, None
 
+        box_regression = cat(box_regression, dim=0)
         # get indices that correspond to the regression targets for
         # the corresponding ground truth labels, to be used with
         # advanced indexing
